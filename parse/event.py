@@ -18,7 +18,7 @@ def save_to_json(target_channel, message):
                 pass
 
     if isinstance(target_channel, str):
-        post_url = f'https://t.me{target_channel}/{message.id}'
+        post_url = f'https://t.me/{target_channel}/{message.id}'
     else:
         clean_id = str(target_channel).replace('-100', '')
         post_url = f'https://t.mec/{clean_id}/{message.id}'

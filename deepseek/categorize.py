@@ -108,7 +108,8 @@ def process_json_with_ai(
                     )
 
                     save_progress(
-                        final_processed_posts, 'processed_messages.json',
+                        final_processed_posts,
+                        'processed_messages.json',
                     )
                 else:
                     print(

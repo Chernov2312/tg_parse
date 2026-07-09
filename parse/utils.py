@@ -21,14 +21,17 @@ def get_reactions(message):
 
 def transcribe_audio_locally(file_path: str) -> str:
     if not os.path.exists(file_path):
-        return '[Ошибка: аудиофайл не найден]'
+        return '[Ошибка: файл не найден]'
 
     try:
-        segments, _ = model.transcribe(
+        transcribe_result = model.transcribe(
             file_path,
             beam_size=5,
             language='ru',
         )
+
+        segments = transcribe_result[0]
+
         text_segments = [segment.text for segment in segments]
         full_text = ' '.join(text_segments).strip()
 
@@ -41,4 +44,4 @@ def transcribe_audio_locally(file_path: str) -> str:
         print(
             f'Критическая ошибка локального Whisper на файле {file_path}: {e}',
         )
-        return f'[Не удалось обработать аудио локально: {e}]'
+        return f'[Не удалось обработать файл локально: {e}]'

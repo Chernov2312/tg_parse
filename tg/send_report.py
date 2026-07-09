@@ -1,10 +1,13 @@
-__all__ = ('send_interactive_report',)
+__all__ = ()
 import json
 import os
+from datetime import datetime
 
 import pandas as pd
 from openpyxl.utils import get_column_letter
 from telethon import TelegramClient
+
+__all__ = ('send_interactive_report',)
 
 CHAT_ID = 'me'
 STATE_FILE = 'report_state.json'
@@ -23,117 +26,124 @@ def load_classified_posts(filename: str) -> list:
         return []
 
 
+def load_state() -> dict:
+    if os.path.exists(STATE_FILE):
+        try:
+            with open(STATE_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+
+def save_state(state: dict):
+    try:
+        with open(STATE_FILE, 'w', encoding='utf-8') as f:
+            json.dump(state, f, ensure_ascii=False, indent=4)
+    except Exception as e:
+        print(f'Ошибка сохранения состояния: {e}')
+
+
+def build_top_text(df_high_useful: pd.DataFrame) -> str:
+    lines = []
+    lines.append('📚 <b>НАВИГАЦИЯ ПО ПОЛЕЗНЫМ МАТЕРИАЛАМ</b>')
+    lines.append('')
+
+    if df_high_useful.empty:
+        lines.append('😔 Пока нет постов с высокой полезностью.')
+        return '\n'.join(lines)
+
+    for cat_name, cat_group in df_high_useful.groupby('Категория'):
+        lines.append('───────────────────')
+        lines.append(f'<b>{cat_name}</b>')
+
+        top_10_in_category = cat_group.head(10)
+
+        for _, row in top_10_in_category.iterrows():
+            url = row.get('Ссылка на пост', '#')
+            subcategory = str(row.get('Подкатегория', ''))
+            rubric = str(row.get('Рубрика', ''))
+
+            sub_ok = (
+                subcategory and subcategory != '—' and subcategory != 'nan'
+            )
+            rub_ok = rubric and rubric != '—' and rubric != 'nan'
+
+            if sub_ok and rub_ok:
+                text = f'{subcategory} | {rubric}'
+            elif sub_ok:
+                text = subcategory
+            elif rub_ok:
+                text = rubric
+            else:
+                text = f'Пост №{row.get("ID Поста", "?")}'
+
+            if len(str(text)) > 80:
+                text = str(text)[:77] + '...'
+
+            lines.append(f'🔹 <a href="{url}">{text}</a>')
+
+    return '\n'.join(lines)
+
+
 async def send_interactive_report(client: TelegramClient):
-    text_posts = load_classified_posts('processed_messages.json')
-    all_posts = text_posts
-
-    valid_posts = [p for p in all_posts if 'error' not in p]
-
-    if not valid_posts:
-        print('Нет успешных данных для формирования Excel-отчета.')
+    posts = load_classified_posts('processed_messages.json')
+    if not posts:
+        print('Нет данных для отправки.')
         return
 
-    rows = []
-    for post in valid_posts:
-        try:
-            post_id_clean = int(post.get('id'))
-        except (ValueError, TypeError):
-            post_id_clean = post.get('id')
+    df = pd.DataFrame(posts)
 
-        raw_date = post.get('date', 'Не указана')
-        clean_date = (
-            raw_date.replace('T', ' ').split('+')[0]
-            if 'T' in raw_date
-            else raw_date
-        )
-
-        rows.append(
-            {
-                'ID Поста': post_id_clean,
-                'Ссылка на пост': post.get(
-                    'url',
-                    f'https://t.me{post_id_clean}',
-                ),
-                'Категория': post.get('category', 'Без категории'),
-                'Подкатегория': post.get('subcategory', '—'),
-                'Рубрика': post.get('rubric', '—'),
-                'Полезность (1-10)': post.get('usefulness', 0),
-                'Важность': post.get('importance', 'средняя'),
-                'Текст поста': post.get('text', '—'),
-                'Дата публикации': clean_date,
-            },
-        )
-
-    df = pd.DataFrame(rows)
-    importance_weight = {'высокая': 3, 'средняя': 2, 'низкая': 1}
-    df['_weight'] = df['Важность'].map(importance_weight)
-    df = df.sort_values(
-        by=['Категория', 'Полезность (1-10)', '_weight'],
-        ascending=[True, False, False],
+    df_high = (
+        df[df['Полезность'] == 'Высокая']
+        if 'Полезность' in df.columns
+        else pd.DataFrame()
     )
-    df = df.drop(columns=['_weight'])
 
-    excel_filename = 'анализ_каналов_report.xlsx'
-    with pd.ExcelWriter(excel_filename, engine='openpyxl') as writer:
-        df.to_excel(writer, index=False, sheet_name='Анализ контента')
-        worksheet = writer.sheets['Анализ контента']
+    state = load_state()
+    old_messages = state.get('last_message_ids', [])
+
+    if old_messages:
+        print(f'Удаление старых сообщений: {old_messages}')
+        try:
+            await client.delete_messages(
+                CHAT_ID,
+                [int(m_id) for m_id in old_messages],
+            )
+        except Exception as e:
+            print(f'Не удалось удалить некоторые сообщения: {e}')
+
+    new_message_ids = []
+
+    report_text = build_top_text(df_high)
+    msg_text = await client.send_message(
+        CHAT_ID,
+        report_text,
+        parse_mode='html',
+        link_preview=False,
+    )
+    new_message_ids.append(msg_text.id)
+
+    excel_path = 'temporary_report.xlsx'
+    with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
+        df.to_excel(writer, index=False, sheet_name='Все посты')
+        worksheet = writer.sheets['Все посты']
         for col in worksheet.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
             col_letter = get_column_letter(col[0].column)
             worksheet.column_dimensions[col_letter].width = max(
                 max_len + 3,
-                12,
+                10,
             )
 
-    if os.path.exists(STATE_FILE):
-        try:
-            with open(STATE_FILE, 'r', encoding='utf-8') as sf:
-                state = json.load(sf)
-                old_msg_id = state.get('last_message_id')
+    caption = '📊 Полный отчет обновлен:'
+    f' {datetime.now().strftime("%d.%m.%Y %H:%M")}'
+    msg_file = await client.send_file(CHAT_ID, excel_path, caption=caption)
+    new_message_ids.append(msg_file.id)
 
-                if old_msg_id:
-                    print(
-                        f'[Telethon] Удаляем старое сообщение с'
-                        f' отчетом (ID: {old_msg_id}) из чата...',
-                    )
-                    await client.delete_messages(
-                        entity=CHAT_ID,
-                        message_ids=old_msg_id,
-                    )
-        except Exception as delete_err:
-            print(
-                f'[Предупреждение] Не удалось удалить'
-                f' старое сообщение: {delete_err}',
-            )
+    if os.path.exists(excel_path):
+        os.remove(excel_path)
 
-    print('Отправка свежего Excel-файла в Telegram...')
-    try:
-        total_posts = len(df)
-        caption_text = (
-            '📊 **Обновленный Контент-анализ**\n'
-            '━━━━━━━━━━━━━━━━━━━━\n'
-            ' База данных обновлена после выхода нового поста.\n'
-            f' Всего отсортировано постов в таблице: **{total_posts}**\n'
-        )
-
-        new_message = await client.send_file(
-            entity=CHAT_ID,
-            file=excel_filename,
-            caption=caption_text,
-            parse_mode='md',
-        )
-        print('Новый отчет успешно доставлен!')
-
-        with open(STATE_FILE, 'w', encoding='utf-8') as sf:
-            json.dump(
-                {'last_message_id': new_message.id},
-                sf,
-                ensure_ascii=False,
-                indent=4,
-            )
-
-        if os.path.exists(excel_filename):
-            os.remove(excel_filename)
-
-    except Exception as e:
-        print(f'Не удалось отправить файл отчета в Telegram: {e}')
+    state['last_message_ids'] = new_message_ids
+    save_state(state)
+    print(f'Новые сообщения отправлены. ID: {new_message_ids}')
