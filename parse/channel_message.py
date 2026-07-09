@@ -135,7 +135,20 @@ async def create_messages_json(client: TelegramClient, target_channel):
             }
 
             unsaved_count += 1
+        else:
+            reactions = (
+                get_reactions(message)
+                if 'get_reactions' in globals()
+                else None
+            )
+            data[msg_id_str] = {
+                'text': 'не удалось извлечь, так как это изображение или нечитаемое видео',
+                'url': post_url,
+                'date': message.date.isoformat() if message.date else None,
+                'reactions': reactions,
+            }
 
+            unsaved_count += 1
         if unsaved_count >= SAVE_EVERY_N_MESSAGES:
             with open(filename, 'w', encoding='utf-8') as f:
                 json.dump(data, f, ensure_ascii=False, indent=4)

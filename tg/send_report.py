@@ -1,7 +1,6 @@
-__all__ = ()
 import json
 import os
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pandas as pd
 from openpyxl.utils import get_column_letter
@@ -20,7 +19,9 @@ def load_classified_posts(filename: str) -> list:
     try:
         with open(filename, 'r', encoding='utf-8') as f:
             data = json.load(f)
-            return data.get('posts', [])
+            if isinstance(data, dict):
+                return data.get('posts', [])
+            return data
     except Exception as e:
         print(f'Ошибка чтения файла {filename}: {e}')
         return []
@@ -46,28 +47,32 @@ def save_state(state: dict):
 
 def build_top_text(df_high_useful: pd.DataFrame) -> str:
     lines = []
-    lines.append('📚 <b>НАВИГАЦИЯ ПО ПОЛЕЗНЫМ МАТЕРИАЛАМ</b>')
+    lines.append(
+        '📚 <b>НАВИГАЦИЯ ПО ПОЛЕЗНЫМ МАТЕРИАЛАМ (ЗА ПОСЛЕДНИЙ ГОД)</b>'
+    )
     lines.append('')
 
     if df_high_useful.empty:
-        lines.append('😔 Пока нет постов с высокой полезностью.')
+        lines.append('😔 Пока нет полезных постов за последний год.')
         return '\n'.join(lines)
 
-    for cat_name, cat_group in df_high_useful.groupby('Категория'):
+    for cat_name, cat_group in df_high_useful.groupby('category'):
         lines.append('───────────────────')
         lines.append(f'<b>{cat_name}</b>')
 
         top_10_in_category = cat_group.head(10)
 
         for _, row in top_10_in_category.iterrows():
-            url = row.get('Ссылка на пост', '#')
-            subcategory = str(row.get('Подкатегория', ''))
-            rubric = str(row.get('Рубрика', ''))
+            url = row.get('url', '#')
+            subcategory = str(row.get('subcategory', ''))
+            rubric = str(row.get('rubric', ''))
 
-            sub_ok = (
-                subcategory and subcategory != '—' and subcategory != 'nan'
+            sub_ok = subcategory and subcategory.strip() not in (
+                '—',
+                'nan',
+                '',
             )
-            rub_ok = rubric and rubric != '—' and rubric != 'nan'
+            rub_ok = rubric and rubric.strip() not in ('—', 'nan', '')
 
             if sub_ok and rub_ok:
                 text = f'{subcategory} | {rubric}'
@@ -76,7 +81,7 @@ def build_top_text(df_high_useful: pd.DataFrame) -> str:
             elif rub_ok:
                 text = rubric
             else:
-                text = f'Пост №{row.get("ID Поста", "?")}'
+                text = f'Пост №{row.get("id", "?")}'
 
             if len(str(text)) > 80:
                 text = str(text)[:77] + '...'
@@ -95,10 +100,17 @@ async def send_interactive_report(client: TelegramClient):
     df = pd.DataFrame(posts)
 
     df_high = (
-        df[df['Полезность'] == 'Высокая']
-        if 'Полезность' in df.columns
+        df[df['usefulness'] >= 7].copy()
+        if 'usefulness' in df.columns
         else pd.DataFrame()
     )
+
+    if not df_high.empty and 'date' in df_high.columns:
+        df_high['datetime_parsed'] = pd.to_datetime(
+            df_high['date'], errors='coerce'
+        )
+        one_year_ago = datetime.now() - timedelta(days=365)
+        df_high = df_high[df_high['datetime_parsed'] >= one_year_ago]
 
     state = load_state()
     old_messages = state.get('last_message_ids', [])
@@ -116,13 +128,49 @@ async def send_interactive_report(client: TelegramClient):
     new_message_ids = []
 
     report_text = build_top_text(df_high)
-    msg_text = await client.send_message(
-        CHAT_ID,
-        report_text,
-        parse_mode='html',
-        link_preview=False,
-    )
-    new_message_ids.append(msg_text.id)
+    MAX_LENGTH = 3900
+
+    if len(report_text) <= MAX_LENGTH:
+        msg_text = await client.send_message(
+            CHAT_ID, report_text, parse_mode='html', link_preview=False
+        )
+        new_message_ids.append(msg_text.id)
+    else:
+        print(
+            f'Текст навигации слишком длинный ({len(report_text)} симв.). Разбиваем на части...'
+        )
+        lines = report_text.split('\n')
+        current_chunk = []
+        current_length = 0
+
+        for line in lines:
+            if current_length + len(line) + 1 > MAX_LENGTH:
+                chunk_text = '\n'.join(current_chunk)
+                msg_text = await client.send_message(
+                    CHAT_ID, chunk_text, parse_mode='html', link_preview=False
+                )
+                new_message_ids.append(msg_text.id)
+                current_chunk = [line]
+                current_length = len(line)
+            else:
+                current_chunk.append(line)
+                current_length += len(line) + 1
+
+        if current_chunk:
+            chunk_text = '\n'.join(current_chunk)
+            msg_text = await client.send_message(
+                CHAT_ID, chunk_text, parse_mode='html', link_preview=False
+            )
+            new_message_ids.append(msg_text.id)
+
+    for col in df.select_dtypes(include=['object', 'string']).columns:
+        df[col] = df[col].apply(
+            lambda x: (
+                str(x)[:32700] + '... [Обрезано из-за лимита Excel]'
+                if isinstance(x, str) and len(x) > 32767
+                else x
+            )
+        )
 
     excel_path = 'temporary_report.xlsx'
     with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
@@ -131,13 +179,11 @@ async def send_interactive_report(client: TelegramClient):
         for col in worksheet.columns:
             max_len = max(len(str(cell.value or '')) for cell in col)
             col_letter = get_column_letter(col[0].column)
-            worksheet.column_dimensions[col_letter].width = max(
-                max_len + 3,
-                10,
+            worksheet.column_dimensions[col_letter].width = min(
+                max(max_len + 3, 10), 50
             )
 
-    caption = '📊 Полный отчет обновлен:'
-    f' {datetime.now().strftime("%d.%m.%Y %H:%M")}'
+    caption = f'📊 Полный архив отчетов обновлен: {datetime.now().strftime("%d.%m.%Y %H:%M")}'
     msg_file = await client.send_file(CHAT_ID, excel_path, caption=caption)
     new_message_ids.append(msg_file.id)
 

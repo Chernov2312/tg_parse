@@ -21,22 +21,29 @@ def get_reactions(message):
 
 def transcribe_audio_locally(file_path: str) -> str:
     if not os.path.exists(file_path):
-        return '[Ошибка: файл не найден]'
+        return ""
 
     try:
-        transcribe_result = model.transcribe(
+        # 1. Вызываем метод без какой-либо распаковки.
+        result = model.transcribe(
             file_path,
             beam_size=5,
             language='ru',
         )
 
-        segments = transcribe_result[0]
+        # 2. Безопасно проверяем, что вернулся корректный кортеж/объект
+        if not result or not isinstance(result, tuple) or len(result) == 0:
+            print(
+                f"Предупреждение: Whisper вернул пустой результат для {file_path} (возможно, нет аудиодорожки)"
+            )
+            return ""
 
+        # 3. Извлекаем генератор сегментов
+        segments = result[0]
+
+        # 4. Собираем текст
         text_segments = [segment.text for segment in segments]
         full_text = ' '.join(text_segments).strip()
-
-        if not full_text:
-            return '[Аудиозапись пуста или голос не различим]'
 
         return full_text
 
@@ -44,4 +51,6 @@ def transcribe_audio_locally(file_path: str) -> str:
         print(
             f'Критическая ошибка локального Whisper на файле {file_path}: {e}',
         )
-        return f'[Не удалось обработать файл локально: {e}]'
+        # Возвращаем СТРОГО пустую строку.
+        # Если вернуть текст ошибки вроде "[Ошибка]", ваш основной скрипт посчитает это успешным текстом.
+        return ""

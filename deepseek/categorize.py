@@ -129,6 +129,11 @@ def process_json_with_ai(
 def categorize_posts():
     with open('messages.json', 'r', encoding='utf-8') as file:
         data = json.loads(file.read())
+        for post in list(data):
+            post_text = data[post].get('text') or ''
+
+            if 'не удалось извлечь' in post_text:
+                del data[post]
 
     processed_data_list = []
 
