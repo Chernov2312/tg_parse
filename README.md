@@ -15,13 +15,13 @@
 1. Клонирование репозитория
 
 ```bash
-git clone 
+git clone https://github.com/Chernov2312/tg_parse
 ```
 
 2. Переход в папку проекта
 
 ```bash
-cd team-3
+cd tg_parse
 ```
 
 3. Создание виртуального окружения
