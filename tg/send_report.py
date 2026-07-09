@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 
 import pandas as pd
 from openpyxl.utils import get_column_letter
+from openpyxl.styles import Font, PatternFill, Alignment, Border, Side
 from telethon import TelegramClient
 
 __all__ = ('send_interactive_report',)
@@ -48,7 +49,7 @@ def save_state(state: dict):
 def build_top_text(df_high_useful: pd.DataFrame) -> str:
     lines = []
     lines.append(
-        '📚 <b>НАВИГАЦИЯ ПО ПОЛЕЗНЫМ МАТЕРИАЛАМ (ЗА ПОСЛЕДНИЙ ГОД)</b>'
+        '📚 <b>НАВИГАЦИЯ ПО ПОЛЕЗНЫМ МАТЕРИАЛАМ (ЗА ПОСЛЕДНИЙ ГОД)</b>',
     )
     lines.append('')
 
@@ -107,7 +108,8 @@ async def send_interactive_report(client: TelegramClient):
 
     if not df_high.empty and 'date' in df_high.columns:
         df_high['datetime_parsed'] = pd.to_datetime(
-            df_high['date'], errors='coerce'
+            df_high['date'],
+            errors='coerce',
         )
         one_year_ago = datetime.now() - timedelta(days=365)
         df_high = df_high[df_high['datetime_parsed'] >= one_year_ago]
@@ -132,7 +134,10 @@ async def send_interactive_report(client: TelegramClient):
 
     if len(report_text) <= MAX_LENGTH:
         msg_text = await client.send_message(
-            CHAT_ID, report_text, parse_mode='html', link_preview=False
+            CHAT_ID,
+            report_text,
+            parse_mode='html',
+            link_preview=False,
         )
         new_message_ids.append(msg_text.id)
     else:
@@ -147,7 +152,10 @@ async def send_interactive_report(client: TelegramClient):
             if current_length + len(line) + 1 > MAX_LENGTH:
                 chunk_text = '\n'.join(current_chunk)
                 msg_text = await client.send_message(
-                    CHAT_ID, chunk_text, parse_mode='html', link_preview=False
+                    CHAT_ID,
+                    chunk_text,
+                    parse_mode='html',
+                    link_preview=False,
                 )
                 new_message_ids.append(msg_text.id)
                 current_chunk = [line]
@@ -159,7 +167,10 @@ async def send_interactive_report(client: TelegramClient):
         if current_chunk:
             chunk_text = '\n'.join(current_chunk)
             msg_text = await client.send_message(
-                CHAT_ID, chunk_text, parse_mode='html', link_preview=False
+                CHAT_ID,
+                chunk_text,
+                parse_mode='html',
+                link_preview=False,
             )
             new_message_ids.append(msg_text.id)
 
@@ -169,19 +180,65 @@ async def send_interactive_report(client: TelegramClient):
                 str(x)[:32700] + '... [Обрезано из-за лимита Excel]'
                 if isinstance(x, str) and len(x) > 32767
                 else x
-            )
+            ),
         )
 
     excel_path = 'temporary_report.xlsx'
     with pd.ExcelWriter(excel_path, engine='openpyxl') as writer:
         df.to_excel(writer, index=False, sheet_name='Все посты')
         worksheet = writer.sheets['Все посты']
+
+        worksheet.freeze_panes = 'A2'
+
+        worksheet.sheet_view.showGridLines = True
+
+        header_font = Font(name='Calibri', size=11, bold=True, color='FFFFFF')
+        header_fill = PatternFill(
+            start_color='1F4E78', end_color='1F4E78', fill_type='solid',
+        )
+        header_alignment = Alignment(
+            horizontal='center', vertical='center', wrap_text=True,
+        )
+
+        data_font = Font(name='Calibri', size=11)
+        data_alignment = Alignment(
+            horizontal='left', vertical='center', wrap_text=False,
+        )
+
+        thin_side = Side(border_style='thin', color='D9D9D9')
+        cell_border = Border(
+            left=thin_side, right=thin_side, top=thin_side, bottom=thin_side,
+        )
+
+        worksheet.row_dimensions[1].height = 28
+        for cell in worksheet[1]:
+            cell.font = header_font
+            cell.fill = header_fill
+            cell.alignment = header_alignment
+            cell.border = cell_border
+
         for col in worksheet.columns:
-            max_len = max(len(str(cell.value or '')) for cell in col)
+            max_len = 0
             col_letter = get_column_letter(col[0].column)
+
+            for cell in col:
+                val_str = str(cell.value or '')
+                if cell.row > 1:
+                    cell.font = data_font
+                    cell.alignment = data_alignment
+                    cell.border = cell_border
+
+                    if len(val_str) > 40:
+                        val_str = val_str[:40]
+
+                max_len = max(max_len, len(val_str))
+
             worksheet.column_dimensions[col_letter].width = min(
-                max(max_len + 3, 10), 50
+                max(max_len + 4, 12), 45
             )
+
+        for row in range(2, worksheet.max_row + 1):
+            worksheet.row_dimensions[row].height = 22
 
     caption = f'📊 Полный архив отчетов обновлен: {datetime.now().strftime("%d.%m.%Y %H:%M")}'
     msg_file = await client.send_file(CHAT_ID, excel_path, caption=caption)
